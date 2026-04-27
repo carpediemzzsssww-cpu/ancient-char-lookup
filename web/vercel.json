@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/api/parse/route.ts": { "maxDuration": 10 },
+    "app/api/match/route.ts": { "maxDuration": 10 },
+    "app/api/probe/route.ts": { "maxDuration": 10 },
+    "app/api/img/route.ts": { "maxDuration": 10 }
+  }
+}

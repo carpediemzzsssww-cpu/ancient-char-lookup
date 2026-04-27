@@ -1,0 +1,35 @@
+{
+  "evobc": {
+    "data_dir": "data/evobc",
+    "key_value_file": "data/evobc/Key&Value.json",
+    "images_root": "data/evobc/EVOBC",
+    "era_codes": {
+      "甲骨文": ["OBC"],
+      "金文": ["BI"],
+      "战国文字": ["WSC", "SAC"],
+      "篆书": ["SS"]
+    }
+  },
+  "ccamc": {
+    "base_url": "http://ccamc.org/cjkv_oaccgd.php",
+    "types": {
+      "甲骨文": "oracle",
+      "金文": "bronze",
+      "战国文字": "chujian",
+      "篆书": "qinjian"
+    }
+  },
+  "reference_links": {
+    "zi_tools": "https://zi.tools/zi/{char}",
+    "ccamc": "http://ccamc.org/cjkv_oaccgd.php?cjkv={encoded}&type=oracle",
+    "xiaoxue": "https://xiaoxue.iis.sinica.edu.tw/yanbian?char={char}",
+    "zdic": "https://www.zdic.net/hans/{char}"
+  },
+  "scraping": {
+    "concurrency": 3,
+    "delay_ms_min": 500,
+    "delay_ms_max": 1000,
+    "max_retries": 3,
+    "backoff_seconds": [30, 60, 120]
+  }
+}
