@@ -9,10 +9,11 @@ function parseLine(line: string): Entry | null {
   const stripped = line.trim();
   if (!stripped) return null;
   const m = stripped.match(LINE_BRACKET_RE);
-  if (m) return { main: m[1], variants: m[2].split('') };
+  if (m && m[1] && m[2]) return { main: m[1], variants: m[2].split('') };
   const chars = stripped.match(HAN_GLOBAL) || [];
-  if (chars.length === 0) return null;
-  return { main: chars[0], variants: chars.slice(1) };
+  const main = chars[0];
+  if (!main) return null;
+  return { main, variants: chars.slice(1) };
 }
 
 export function parseText(text: string): Entry[] {
