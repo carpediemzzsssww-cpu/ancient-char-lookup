@@ -6,7 +6,7 @@ import { buildRefLinks } from '@/lib/links';
 import { ERAS, ERA_LABEL, type Era, type EraStatus } from '@/lib/ccamc';
 import { renderHTML } from '@/lib/generator';
 import { renderNavHTML } from '@/lib/nav-generator';
-import { HERO_IMGS } from '@/lib/heroImgs';
+import { HERO_IMGS, HERO_CHAR } from '@/lib/heroImgs';
 
 type Phase = 'idle' | 'parsing' | 'matching' | 'done' | 'error';
 type Mode = 'images' | 'nav';
@@ -336,72 +336,57 @@ export default function Home() {
           <ServerStatusPill health={serverHealth} />
         </div>
 
-        {/* HERO */}
-        <section className="grid lg:grid-cols-[1.3fr_1fr] gap-12 items-center mb-16">
-          <div className="fade-in">
-            <div className="font-mono text-xs tracking-widest mb-4" style={{ color: 'var(--vermilion)' }}>
-              · 字源檢索 · 一键對照 · CC0 ·
-            </div>
-            <h1 className="brand-title">
-              一字之间，<br />三千年之<em>跨越</em>
-            </h1>
-            <p className="brand-sub mt-6">
-              粘贴汉字，看它在<strong>甲骨文 · 金文 · 战国文字 · 篆书</strong>四个时代的样子。
-              数据来自 ccamc.org（开放古文字字形库 · CC0），完整 99.6% 命中率请用本地 CLI。
-            </p>
-          </div>
-
-          {/* Hero 演化网格 — 5 格大现代字 + 4 时代轮播高亮 */}
-          <div className="relative">
-            <div className="grid grid-cols-5 gap-2">
+        {/* HERO — 演化时间轴本身就是宣传 */}
+        <section className="mb-14 fade-in">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 mb-5">
+            {hero.map((h, i) => (
               <div
-                className="evo-cell modern col-span-1"
-                style={{ outline: heroIdx === 0 ? '2px solid var(--vermilion)' : 'none', outlineOffset: 2, transition: 'outline 0.3s' }}
+                key={h.era}
+                className="evo-cell"
+                style={{
+                  outline: heroIdx === i ? '2px solid var(--vermilion)' : 'none',
+                  outlineOffset: 2,
+                  transition: 'outline 0.4s ease',
+                }}
               >
-                令
-                <span className="era-tag">现代</span>
+                <img src={h.src} alt={h.label} />
+                <span className="era-tag">{h.label}</span>
               </div>
-              {hero.map((h, i) => (
-                <div
-                  key={h.era}
-                  className="evo-cell"
-                  style={{
-                    outline: heroIdx === i + 1 ? '2px solid var(--vermilion)' : 'none',
-                    outlineOffset: 2,
-                    transition: 'outline 0.3s',
-                  }}
-                >
-                  <img src={h.src} alt={h.label} />
-                  <span className="era-tag">{h.label}</span>
-                </div>
-              ))}
+            ))}
+            <div
+              className="evo-cell modern"
+              style={{
+                outline: heroIdx === 4 ? '2px solid var(--vermilion)' : 'none',
+                outlineOffset: 2,
+                transition: 'outline 0.4s ease',
+              }}
+            >
+              {HERO_CHAR}
+              <span className="era-tag">现代</span>
             </div>
-            <div className="mt-3 font-mono text-[10px] tracking-widest text-right" style={{ color: 'var(--ink-muted)' }}>
-              「令」字之演化 · EVOBC 数据集
-            </div>
+          </div>
+          <div className="flex items-baseline justify-between gap-4 flex-wrap">
+            <h1 className="font-display text-[28px] sm:text-[34px] font-bold tracking-tight" style={{ color: 'var(--ink)', fontFamily: 'var(--font-body)' }}>
+              「{HERO_CHAR}」字 · 三千年来的样子
+            </h1>
+            <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+              EVOBC · 13,714 字 · CC0
+            </span>
           </div>
         </section>
 
         {/* 输入区 */}
         <section className="mb-12">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display text-2xl font-semibold">輸入待查的字</h2>
-            <button
-              onClick={() => setText(EXAMPLE_TEXT)}
-              className="btn-ghost"
-              disabled={busy}
-            >
-              示例字
-            </button>
-          </div>
+          <textarea
+            className="field-input min-h-[160px]"
+            placeholder="粘贴汉字 — 每行一个，或写「俯（頫）」让异体字也参与查找"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            spellCheck={false}
+            disabled={busy}
+          />
 
-          <div
-            className="border-2 border-dashed rounded-md px-4 py-3 text-center mb-3 transition-colors"
-            style={{ borderColor: 'var(--rule)' }}
-            onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--vermilion)'; }}
-            onDragLeave={(e) => { e.currentTarget.style.borderColor = 'var(--rule)'; }}
-            onDrop={(e) => { e.currentTarget.style.borderColor = 'var(--rule)'; onDrop(e); }}
-          >
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs" style={{ color: 'var(--ink-muted)' }}>
             <input
               ref={fileRef} type="file" accept=".docx,.txt" className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }}
@@ -409,48 +394,40 @@ export default function Home() {
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="font-mono text-sm hover:underline"
+              className="font-mono hover:underline"
               style={{ color: 'var(--vermilion)' }}
             >
-              ↑ 上传文件
+              ↑ 上传 .docx/.txt
             </button>
-            <span className="font-mono text-xs ml-2" style={{ color: 'var(--ink-muted)' }}>
-              .docx / .txt · 或拖入此处
-            </span>
+            <button
+              onClick={() => setText(EXAMPLE_TEXT)}
+              className="font-mono hover:underline"
+              style={{ color: 'var(--ink-soft)' }}
+              disabled={busy}
+            >
+              填示例
+            </button>
+            <label className="flex items-center gap-1.5 cursor-pointer ml-auto" style={{ color: 'var(--ink-soft)' }}>
+              <input type="radio" name="mode" value="images" checked={mode === 'images'} onChange={() => setMode('images')} disabled={busy} />
+              <span>對照表</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer" style={{ color: 'var(--ink-soft)' }}>
+              <input type="radio" name="mode" value="nav" checked={mode === 'nav'} onChange={() => setMode('nav')} disabled={busy} />
+              <span>導航表</span>
+            </label>
           </div>
 
-          <textarea
-            className="field-input min-h-[180px]"
-            placeholder={`输入汉字，每行一个或自由格式：\n令\n鬼\n龍\n俯（頫）  ← 括号内是异体字`}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            spellCheck={false}
-            disabled={busy}
-          />
-
-          {/* 模式 + 生成 */}
-          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
-            <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--ink-soft)' }}>
-              <span className="font-mono text-xs tracking-wider" style={{ color: 'var(--ink-muted)' }}>OUTPUT</span>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="mode" value="images" checked={mode === 'images'} onChange={() => setMode('images')} disabled={busy} />
-                <span>對照表（含图）</span>
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="mode" value="nav" checked={mode === 'nav'} onChange={() => setMode('nav')} disabled={busy} />
-                <span>導航表（仅链接，最稳）</span>
-              </label>
-            </div>
-
-            <div className="flex items-center gap-3 ml-auto">
-              <button
-                onClick={handleGenerate}
-                disabled={busy || !text.trim()}
-                className="btn-primary"
-              >
-                {phase === 'parsing' ? '解析中…' : phase === 'matching' ? `匹配 ${progress.done}/${progress.total}` : '一键生成 →'}
-              </button>
-            </div>
+          <div className="mt-5 flex items-center gap-3">
+            <button
+              onClick={handleGenerate}
+              disabled={busy || !text.trim()}
+              className="btn-primary"
+            >
+              {phase === 'parsing' ? '解析中…' : phase === 'matching' ? `匹配 ${progress.done}/${progress.total}` : '一键生成 →'}
+            </button>
+            <span className="font-mono text-[11px]" style={{ color: 'var(--ink-muted)' }}>
+              {mode === 'images' ? '至 200 字' : '至 2000 字'} · 大批量请用本地 CLI（99.6% 命中）
+            </span>
           </div>
 
           {phase === 'matching' && (
