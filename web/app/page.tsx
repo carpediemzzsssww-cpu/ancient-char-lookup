@@ -300,7 +300,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = actualMode === 'images' ? '古文字對照表.html' : '古文字字源導航表.html';
+    a.download = actualMode === 'images' ? '古文字对照表.html' : '古文字字源链接表.html';
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [actualMode, buildHtmlForExport]);
