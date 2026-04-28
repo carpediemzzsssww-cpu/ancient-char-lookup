@@ -53,27 +53,37 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }
 
-/* 印章 / Hanko */
+/* 印章 / Hanko —— 顶栏 logo */
 .seal {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
+  width: 32px;
+  height: 32px;
   background: var(--vermilion);
   color: #fff8e8;
   font-family: var(--font-han);
-  font-size: 22px;
+  font-size: 15px;
+  font-weight: 700;
   line-height: 1;
-  border-radius: 4px;
+  border-radius: 3px;
   box-shadow:
-    inset 0 0 0 2px rgba(255,255,255,0.18),
-    inset 0 0 0 4px var(--vermilion),
-    0 2px 6px rgba(181,72,57,0.25);
+    inset 0 0 0 1.5px rgba(255,255,255,0.18),
+    inset 0 0 0 3px var(--vermilion),
+    0 1px 3px rgba(181,72,57,0.25);
   transform: rotate(-6deg);
-  letter-spacing: 0.06em;
+  letter-spacing: 0;
   user-select: none;
   position: relative;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.seal:hover { animation: stamp 0.4s ease; }
+@keyframes stamp {
+  0%   { transform: rotate(-6deg) translateY(0); }
+  35%  { transform: rotate(-3deg) translateY(-2px); }
+  60%  { transform: rotate(-7deg) translateY(1px); }
+  100% { transform: rotate(-6deg) translateY(0); }
 }
 .seal::before {
   content: '';
@@ -89,30 +99,36 @@ body {
 .font-han     { font-family: var(--font-han); }
 .font-mono    { font-family: var(--font-mono); }
 
-/* hero 4 时代演化卡 */
+/* 演化带 —— 紧凑 5 格横排，≤120px 总高 */
+.evo-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  max-width: 520px;
+}
 .evo-cell {
   background: var(--bone-soft);
   border: 1px solid var(--rule);
-  border-radius: 6px;
+  border-radius: 4px;
   aspect-ratio: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: 6px;
   position: relative;
   overflow: hidden;
 }
 .evo-cell img { max-width: 100%; max-height: 100%; object-fit: contain; filter: brightness(0.18); }
-.evo-cell.modern { font-family: var(--font-han); font-size: clamp(48px, 8vw, 72px); color: var(--ink); line-height: 1; }
-.evo-cell .era-tag {
-  position: absolute;
-  bottom: 4px; left: 6px;
+.evo-cell.modern { font-family: var(--font-han); font-size: clamp(38px, 5vw, 52px); color: var(--ink); line-height: 1; }
+.evo-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.08em;
   color: var(--ink-muted);
-  text-transform: uppercase;
+  text-align: center;
+  margin-top: 4px;
 }
+.evo-label.active { color: var(--vermilion); }
 
 /* 状态徽章 */
 .status-pill {
@@ -189,7 +205,12 @@ body {
   border-color: var(--vermilion);
   box-shadow: 0 0 0 3px var(--vermilion-l);
 }
-.field-input::placeholder { color: var(--ink-muted); font-family: var(--font-body); font-size: 14px; }
+.field-input::placeholder {
+  color: var(--ink-muted);
+  font-family: 'Ma Shan Zheng', var(--font-body);
+  font-size: 17px;
+  opacity: 0.85;
+}
 
 /* 表格 */
 .tbl-han { width: 100%; border-collapse: collapse; }
@@ -231,23 +252,6 @@ body {
   border-radius: 999px;
   margin-left: 6px;
   vertical-align: 2px;
-}
-
-/* hero 字体 */
-.brand-title {
-  font-family: var(--font-display);
-  font-size: clamp(2.5rem, 5vw, 4rem);
-  font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-.brand-title em { font-style: italic; color: var(--vermilion); font-weight: 400; }
-.brand-sub {
-  font-size: 15px;
-  line-height: 1.85;
-  color: var(--ink-soft);
-  max-width: 560px;
 }
 
 /* hint cards */

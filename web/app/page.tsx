@@ -101,7 +101,7 @@ export default function Home() {
     }
   }, []);
 
-  const onDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+  const onDrop = useCallback((e: React.DragEvent<HTMLElement>) => {
     e.preventDefault();
     const f = e.dataTransfer.files?.[0];
     if (f) onFile(f);
@@ -232,7 +232,12 @@ export default function Home() {
 
       if (shouldDegrade) {
         setActualMode('nav');
-        setDegradedReason(degradeReason || (okRate < 0.3 ? `命中率仅 ${(okRate * 100).toFixed(0)}%（疑似数据源限流）` : '服务端降级'));
+        const friendlyReason =
+          degradeReason === 'anti_bot_active' ? '数据源暂时不可用'
+          : degradeReason === 'captcha_in_batch' ? '数据源响应异常'
+          : okRate < 0.3 ? `命中率仅 ${(okRate * 100).toFixed(0)}%`
+          : '服务端切换';
+        setDegradedReason(friendlyReason);
         setNavEntries(entries);
         setStats({ total: entries.length, eraHit: { oracle: 0, bronze: 0, chujian: 0, qinjian: 0 }, captchaCount, cacheHits, notInDb: 0 });
         setPhase('done');
@@ -312,81 +317,73 @@ export default function Home() {
   const busy = phase === 'parsing' || phase === 'matching';
   const hero = HERO_IMGS;
 
+  // 5 段演化带的固定标签
+  const ERA_LABELS = ['甲骨', '金文', '战国', '小篆', '楷书'] as const;
+
   return (
     <main className="min-h-screen relative overflow-hidden">
-      {/* 背景装饰：右上角 atmosphere blob */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-32 -right-40 w-[480px] h-[480px] rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(181,72,57,0.08) 0%, transparent 70%)' }}
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -bottom-32 -left-32 w-[400px] h-[400px] rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(90,116,96,0.06) 0%, transparent 70%)' }}
-      />
+      <div className="max-w-5xl mx-auto px-6 lg:px-8 py-8 relative">
 
-      <div className="max-w-5xl mx-auto px-6 lg:px-8 py-10 lg:py-16 relative">
-
-        {/* 顶部导航行 */}
-        <div className="flex items-center justify-between mb-12">
-          <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-            ANCIENT · CHAR · LOOKUP
+        {/* 顶栏：印章 logo + 工具名（中英） + 状态徽章 */}
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <span className="seal" aria-label="印章 logo">字</span>
+            <div>
+              <div className="font-display text-[17px] font-bold leading-tight" style={{ color: 'var(--ink)' }}>古文字对照表</div>
+              <div className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--ink-muted)' }}>ancient char lookup</div>
+            </div>
           </div>
           <ServerStatusPill health={serverHealth} />
         </div>
 
-        {/* HERO — 演化时间轴本身就是宣传 */}
-        <section className="mb-14 fade-in">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 mb-5">
+        {/* 演化带（≤120px） */}
+        <section className="mb-8">
+          <div className="evo-strip">
             {hero.map((h, i) => (
               <div
                 key={h.era}
                 className="evo-cell"
                 style={{
-                  outline: heroIdx === i ? '2px solid var(--vermilion)' : 'none',
-                  outlineOffset: 2,
+                  outline: heroIdx === i ? '1.5px solid var(--vermilion)' : 'none',
+                  outlineOffset: 1,
                   transition: 'outline 0.4s ease',
                 }}
               >
-                <img src={h.src} alt={h.label} />
-                <span className="era-tag">{h.label}</span>
+                <img src={h.src} alt={ERA_LABELS[i]} />
               </div>
             ))}
             <div
               className="evo-cell modern"
               style={{
-                outline: heroIdx === 4 ? '2px solid var(--vermilion)' : 'none',
-                outlineOffset: 2,
+                outline: heroIdx === 4 ? '1.5px solid var(--vermilion)' : 'none',
+                outlineOffset: 1,
                 transition: 'outline 0.4s ease',
               }}
             >
               {HERO_CHAR}
-              <span className="era-tag">现代</span>
             </div>
           </div>
-          <div className="flex items-baseline justify-between gap-4 flex-wrap">
-            <h1 className="font-display text-[28px] sm:text-[34px] font-bold tracking-tight" style={{ color: 'var(--ink)', fontFamily: 'var(--font-body)' }}>
-              「{HERO_CHAR}」字 · 三千年来的样子
-            </h1>
-            <span className="font-mono text-[10px] tracking-widest" style={{ color: 'var(--ink-muted)' }}>
-              EVOBC · 13,714 字 · CC0
-            </span>
+          <div className="evo-strip mt-2">
+            {ERA_LABELS.map((label, i) => (
+              <div key={i} className={`evo-label ${heroIdx === i ? 'active' : ''}`}>{label}</div>
+            ))}
           </div>
         </section>
 
         {/* 输入区 */}
-        <section className="mb-12">
+        <section className="mb-10">
           <textarea
             className="field-input min-h-[160px]"
-            placeholder="粘贴汉字 — 每行一个，或写「俯（頫）」让异体字也参与查找"
+            placeholder={`粘贴汉字…\n每行一个。括号内为异体字，会一并查找`}
             value={text}
             onChange={(e) => setText(e.target.value)}
             spellCheck={false}
             disabled={busy}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={onDrop}
           />
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs" style={{ color: 'var(--ink-muted)' }}>
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
             <input
               ref={fileRef} type="file" accept=".docx,.txt" className="hidden"
               onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }}
@@ -405,28 +402,35 @@ export default function Home() {
               style={{ color: 'var(--ink-soft)' }}
               disabled={busy}
             >
-              填示例
+              填入示例
             </button>
-            <label className="flex items-center gap-1.5 cursor-pointer ml-auto" style={{ color: 'var(--ink-soft)' }}>
+            <span className="font-mono ml-auto" style={{ color: 'var(--ink-muted)' }}>OUTPUT</span>
+            <label className="flex items-center gap-1.5 cursor-pointer" style={{ color: 'var(--ink-soft)' }}>
               <input type="radio" name="mode" value="images" checked={mode === 'images'} onChange={() => setMode('images')} disabled={busy} />
-              <span>對照表</span>
+              <span>对照表</span>
             </label>
             <label className="flex items-center gap-1.5 cursor-pointer" style={{ color: 'var(--ink-soft)' }}>
               <input type="radio" name="mode" value="nav" checked={mode === 'nav'} onChange={() => setMode('nav')} disabled={busy} />
-              <span>導航表</span>
+              <span>字源链接</span>
             </label>
           </div>
 
-          <div className="mt-5 flex items-center gap-3">
+          <div className="mt-5 flex items-center gap-3 flex-wrap">
             <button
               onClick={handleGenerate}
               disabled={busy || !text.trim()}
               className="btn-primary"
             >
-              {phase === 'parsing' ? '解析中…' : phase === 'matching' ? `匹配 ${progress.done}/${progress.total}` : '一键生成 →'}
+              {phase === 'parsing'
+                ? '解析中…'
+                : phase === 'matching'
+                ? `匹配 ${progress.done}/${progress.total}`
+                : mode === 'images'
+                ? '生成对照表 →'
+                : '生成链接表 →'}
             </button>
             <span className="font-mono text-[11px]" style={{ color: 'var(--ink-muted)' }}>
-              {mode === 'images' ? '至 200 字' : '至 2000 字'} · 大批量请用本地 CLI（99.6% 命中）
+              上限 {mode === 'images' ? '200' : '2000'} 字 · 更多请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>（99.6% 命中）
             </span>
           </div>
 
@@ -449,7 +453,7 @@ export default function Home() {
           <section className="fade-in">
             {degradedReason && (
               <div className="hint-card warn mb-4">
-                ⚠ <strong>已自动降级到导航表模式</strong>（{degradedReason}）。完整对照表请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>（99.6% 命中）。
+                <strong>已切到字源链接模式</strong>（{degradedReason}）· 完整对照表请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>（99.6% 命中）
               </div>
             )}
 
@@ -463,7 +467,7 @@ export default function Home() {
                   </span>
                   {stats.notInDb > 0 && (
                     <span className="font-mono text-xs" style={{ color: 'var(--vermilion)' }}>
-                      ccamc 未收录 {stats.notInDb}
+                      ccamc 无此字 {stats.notInDb}
                     </span>
                   )}
                   {stats.cacheHits > 0 && (
@@ -486,12 +490,12 @@ export default function Home() {
                   <thead>
                     <tr>
                       <th>#</th>
-                      <th>現代漢字</th>
-                      <th>甲骨文</th>
+                      <th>现代</th>
+                      <th>甲骨</th>
                       <th>金文</th>
-                      <th>戰國文字</th>
-                      <th>篆書</th>
-                      <th>字源檢索</th>
+                      <th>战国</th>
+                      <th>小篆</th>
+                      <th>字源</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -504,9 +508,9 @@ export default function Home() {
                             <span className="variant">（{r.entry.variants.join('、')}）</span>
                           )}
                           {r.hitChar !== r.entry.main && (
-                            <div className="hit-note">配字：{r.hitChar}</div>
+                            <div className="hit-note">配字 {r.hitChar}</div>
                           )}
-                          {r.fromCache && <span className="cache-badge">⚡ 缓存</span>}
+                          {r.fromCache && <span className="cache-badge">已缓存</span>}
                         </td>
                         {ERAS.map((era) => (
                           <td key={era} className="col-era">
@@ -532,8 +536,8 @@ export default function Home() {
                   <thead>
                     <tr>
                       <th>#</th>
-                      <th>現代漢字</th>
-                      <th>字源檢索（4 個權威庫）</th>
+                      <th>现代</th>
+                      <th>字源链接（4 个）</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -556,40 +560,30 @@ export default function Home() {
               </div>
             )}
 
-            {/* 「缺」状态图例 */}
+            {/* 状态图例 */}
             {actualMode === 'images' && rows && (
               <div className="mt-4 hint-card text-xs">
-                <strong>「缺」的几种可能：</strong>
-                <span className="cell-miss-empty mx-2">·  灰</span>= 此字源此时代无字形拓本（古文字本就只有部分字流传至今）
-                <span className="cell-miss-captcha mx-2">⏳ 朱</span>= 数据源临时限流，刷新或几小时后再试
-                <span className="cell-miss-error mx-2">✕ 暗</span>= 网络错误。完整对照表请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>。
+                空格的几种含义：
+                <span className="cell-miss-empty mx-2">· 无</span>这个时代没有此字的拓本（古文字本就只有一部分流传）
+                <span className="cell-miss-captcha mx-2">⏳ 稍候</span>数据源暂时不可用，几小时后会恢复
+                <span className="cell-miss-error mx-2">✕ 失败</span>网络异常 · 完整对照请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>
               </div>
             )}
           </section>
         )}
 
-        {/* 印章 + 致谢 */}
-        <footer className="mt-20 pt-8 flex flex-col sm:flex-row items-center sm:items-end gap-6 sm:gap-8 sm:justify-between" style={{ borderTop: '1px solid var(--rule)' }}>
-          <div className="flex items-center gap-4">
-            <div className="seal" aria-hidden>古文</div>
-            <div>
-              <div className="font-display text-base font-semibold" style={{ color: 'var(--ink)' }}>古文字對照表生成器</div>
-              <div className="font-mono text-[10px] tracking-widest mt-1" style={{ color: 'var(--ink-muted)' }}>
-                CLI · WEB · MIT LICENSE
-              </div>
-            </div>
+        <footer className="mt-16 pt-6 text-xs flex flex-wrap items-center justify-between gap-3" style={{ borderTop: '1px solid var(--rule)', color: 'var(--ink-muted)' }}>
+          <div>
+            数据：
+            <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="http://ccamc.org" target="_blank" rel="noopener">ccamc.org</a> ·
+            <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://zi.tools" target="_blank" rel="noopener">zi.tools</a> ·
+            <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://xiaoxue.iis.sinica.edu.tw" target="_blank" rel="noopener">小学堂</a> ·
+            <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://github.com/RomanticGodVAN/character-Evolution-Dataset" target="_blank" rel="noopener">EVOBC</a>
           </div>
-          <div className="text-xs leading-relaxed text-center sm:text-right" style={{ color: 'var(--ink-muted)' }}>
-            <div>
-              数据致谢：
-              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="http://ccamc.org" target="_blank" rel="noopener">ccamc.org</a> ·
-              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://zi.tools" target="_blank" rel="noopener">zi.tools</a> ·
-              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://xiaoxue.iis.sinica.edu.tw" target="_blank" rel="noopener">小学堂</a> ·
-              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://github.com/RomanticGodVAN/character-Evolution-Dataset" target="_blank" rel="noopener">EVOBC</a>
-            </div>
-            <div className="mt-1">
-              <a className="hover:underline" style={{ color: 'var(--vermilion)' }} href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener">GitHub →</a>
-            </div>
+          <div className="font-mono">
+            <a className="hover:underline" style={{ color: 'var(--vermilion)' }} href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener">GitHub →</a>
+            <span className="mx-2" style={{ color: 'var(--ink-faint)' }}>·</span>
+            MIT
           </div>
         </footer>
       </div>
@@ -608,16 +602,16 @@ function ServerStatusPill({ health }: { health: { antiBotActive: boolean; cacheH
   }
   if (health.antiBotActive) {
     return (
-      <span className="status-pill status-degraded" title="ccamc 当前限流，已切到导航表模式">
+      <span className="status-pill status-degraded" title="数据源暂时不可用，已自动切到字源链接模式">
         <span className="dot" />
-        <span>限流中 · 自动降级</span>
+        <span>数据源不稳 · 自动降级</span>
       </span>
     );
   }
   return (
-    <span className="status-pill status-ok" title={`缓存 ${health.memSize} 字 · 命中 ${health.cacheHits} 次`}>
+    <span className="status-pill status-ok" title={`已缓存 ${health.memSize} 字 · 命中 ${health.cacheHits} 次`}>
       <span className="dot" />
-      <span>正常 · cache {health.memSize}</span>
+      <span>运行中 · 已缓存 {health.memSize}</span>
     </span>
   );
 }
@@ -627,11 +621,11 @@ function EraCell({ url, status, eraLabel }: { url: string | null; status: EraSta
     return <img src={url} alt={eraLabel} loading="lazy" />;
   }
   if (status === 'captcha') {
-    return <span className="cell-miss-captcha" title="数据源临时限流，刷新或稍后再试">⏳ 限流</span>;
+    return <span className="cell-miss-captcha" title="数据源暂时不可用，几小时后会恢复">⏳ 稍候</span>;
   }
   if (status === 'error') {
-    return <span className="cell-miss-error" title="网络错误">✕ 失败</span>;
+    return <span className="cell-miss-error" title="网络异常">✕ 失败</span>;
   }
   // empty
-  return <span className="cell-miss-empty" title="此字源此时代无收录（古文字部分字本就无遗存）">· 无</span>;
+  return <span className="cell-miss-empty" title="该时代无此字的拓本（古文字本就只有一部分流传）">· 无</span>;
 }
