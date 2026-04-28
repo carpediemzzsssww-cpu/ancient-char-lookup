@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchCharAllEras, ERAS, type Era } from '@/lib/ccamc';
+import { fetchCharAllEras, ERAS, type Era, type EraStatus } from '@/lib/ccamc';
 import { getCachedChar, setCachedChar, cacheStats } from '@/lib/cache';
 import { withSingleflight } from '@/lib/throttle';
 import { recordRequest, recordCacheHit, isAntiBotActive, healthSnapshot } from '@/lib/health';
@@ -10,7 +10,20 @@ export const maxDuration = 10;
 const BATCH_LIMIT = 8;
 const PER_ERA_TIMEOUT = 3500;
 
-type CharResult = { char: string; eras: Record<Era, string[]>; fromCache?: boolean };
+type CharResult = {
+  char: string;
+  hitChar: string;
+  eras: Record<Era, string[]>;
+  eraStatus: Record<Era, EraStatus>;
+  fromCache?: boolean;
+};
+
+function emptyEras(): Record<Era, string[]> {
+  return { oracle: [], bronze: [], chujian: [], qinjian: [] };
+}
+function unknownStatus(): Record<Era, EraStatus> {
+  return { oracle: 'error', bronze: 'error', chujian: 'error', qinjian: 'error' };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,10 +31,12 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(chars)) return NextResponse.json({ error: 'chars 必须是数组' }, { status: 400 });
     const list: string[] = chars.slice(0, BATCH_LIMIT).map(String);
 
-    // 短路：如果当前实例在反爬窗口期，直接返回 degraded 信号，让前端走导航表模式
     if (isAntiBotActive()) {
       return NextResponse.json({
-        results: list.map((c) => ({ char: c, eras: { oracle: [], bronze: [], chujian: [], qinjian: [] } })),
+        results: list.map((c) => ({
+          char: c, hitChar: c, eras: emptyEras(),
+          eraStatus: { oracle: 'captcha' as EraStatus, bronze: 'captcha' as EraStatus, chujian: 'captcha' as EraStatus, qinjian: 'captcha' as EraStatus },
+        })),
         eras: ERAS,
         degraded: true,
         reason: 'anti_bot_active',
@@ -40,30 +55,38 @@ export async function POST(req: NextRequest) {
         const ch = list[i];
         if (!ch) continue;
 
-        // 1) 缓存命中？
         const cached = await getCachedChar(ch);
         if (cached) {
           recordCacheHit();
-          out[i] = { char: ch, eras: cached, fromCache: true };
+          out[i] = { char: ch, hitChar: cached.hitChar, eras: cached.eras, eraStatus: cached.eraStatus, fromCache: true };
           continue;
         }
 
-        // 2) singleflight: 同字并发只打一次 ccamc
         const result = await withSingleflight(`fetch:${ch}`, () =>
           fetchCharAllEras(ch, PER_ERA_TIMEOUT)
         );
 
-        // 3) 记录指标 + 写缓存
         if (result.captchaDetected) {
           recordRequest('captcha');
           captchaCount++;
         } else {
           const hasAny = Object.values(result.eras).some((v) => v.length > 0);
           recordRequest(hasAny ? 'ok' : 'empty');
-          if (hasAny) await setCachedChar(ch, result.eras);
+          if (hasAny) {
+            await setCachedChar(ch, {
+              hitChar: result.hitChar,
+              eras: result.eras,
+              eraStatus: result.eraStatus,
+            });
+          }
         }
 
-        out[i] = { char: ch, eras: result.eras };
+        out[i] = {
+          char: ch,
+          hitChar: result.hitChar,
+          eras: result.eras,
+          eraStatus: result.eraStatus,
+        };
       }
     }
     await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, () => worker()));
@@ -81,7 +104,9 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// GET 用于诊断：当前实例的健康指标
 export async function GET() {
   return NextResponse.json({ health: healthSnapshot(), cache: cacheStats() });
 }
+
+// 帮 Vercel 静默兜底；防止未使用 import 警告（unknownStatus 留作未来扩展）
+void unknownStatus;

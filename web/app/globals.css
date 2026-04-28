@@ -1,26 +1,266 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* 古文字调性：温白纸 + 朱红 + 青铜 */
+  --bone:        #f5f0e6;
+  --bone-soft:   #faf6ec;
+  --bone-dark:   #ebe4d4;
+  --ink:         #1c1814;
+  --ink-soft:    #4a4540;
+  --ink-muted:   #9a9590;
+  --ink-faint:   #c9c2b4;
+  --vermilion:   #b54839;
+  --vermilion-d: #8e3527;
+  --vermilion-l: rgba(181,72,57,0.10);
+  --bronze:      #5a7460;
+  --bronze-l:    rgba(90,116,96,0.10);
+  --rule:        rgba(28,24,20,0.12);
+  --rule-light:  rgba(28,24,20,0.06);
+
+  --font-display: 'Cormorant Garamond', 'Noto Serif SC', Georgia, serif;
+  --font-body:    'Noto Serif SC', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    'DM Mono', 'JetBrains Mono', monospace;
+  --font-han:     'Ma Shan Zheng', 'Noto Serif SC', serif;
+
+  --background: var(--bone);
+  --foreground: var(--ink);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-bone: var(--bone);
+  --color-bone-dark: var(--bone-dark);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-vermilion: var(--vermilion);
+  --color-bronze: var(--bronze);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bone);
+  background-image:
+    radial-gradient(ellipse 60% 40% at 90% 10%, rgba(181,72,57,0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 60% at 10% 90%, rgba(90,116,96,0.03) 0%, transparent 60%);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
 }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }
+
+/* 印章 / Hanko */
+.seal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  background: var(--vermilion);
+  color: #fff8e8;
+  font-family: var(--font-han);
+  font-size: 22px;
+  line-height: 1;
+  border-radius: 4px;
+  box-shadow:
+    inset 0 0 0 2px rgba(255,255,255,0.18),
+    inset 0 0 0 4px var(--vermilion),
+    0 2px 6px rgba(181,72,57,0.25);
+  transform: rotate(-6deg);
+  letter-spacing: 0.06em;
+  user-select: none;
+  position: relative;
+}
+.seal::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 30% 30%, rgba(0,0,0,0.18) 0%, transparent 35%),
+                    radial-gradient(circle at 70% 60%, rgba(0,0,0,0.12) 0%, transparent 30%);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.font-display { font-family: var(--font-display); }
+.font-han     { font-family: var(--font-han); }
+.font-mono    { font-family: var(--font-mono); }
+
+/* hero 4 时代演化卡 */
+.evo-cell {
+  background: var(--bone-soft);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  position: relative;
+  overflow: hidden;
+}
+.evo-cell img { max-width: 100%; max-height: 100%; object-fit: contain; filter: brightness(0.18); }
+.evo-cell.modern { font-family: var(--font-han); font-size: clamp(48px, 8vw, 72px); color: var(--ink); line-height: 1; }
+.evo-cell .era-tag {
+  position: absolute;
+  bottom: 4px; left: 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+}
+
+/* 状态徽章 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.status-ok       { background: var(--bronze-l); color: var(--bronze); }
+.status-degraded { background: var(--vermilion-l); color: var(--vermilion-d); }
+.status-checking { background: rgba(28,24,20,0.06); color: var(--ink-muted); }
+.status-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+.status-ok .dot       { background: var(--bronze); }
+.status-degraded .dot { background: var(--vermilion); animation: pulse 1.6s ease-in-out infinite; }
+.status-checking .dot { background: var(--ink-muted); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* 缺 语义化 */
+.cell-miss-empty   { color: var(--ink-faint); font-size: 11px; font-family: var(--font-mono); cursor: help; }
+.cell-miss-captcha { color: var(--vermilion); font-size: 11px; font-family: var(--font-mono); cursor: help; }
+.cell-miss-error   { color: var(--ink-muted); font-size: 11px; font-family: var(--font-mono); cursor: help; }
+
+/* 主按钮 */
+.btn-primary {
+  background: var(--vermilion);
+  color: #fdfaf0;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-size: 15px;
+  padding: 10px 24px;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.btn-primary:hover:not(:disabled) { background: var(--vermilion-d); }
+.btn-primary:disabled { background: var(--ink-faint); cursor: not-allowed; color: rgba(255,255,255,0.7); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-ghost:hover { border-color: var(--vermilion); color: var(--vermilion); }
+
+/* 输入框 */
+.field-input {
+  width: 100%;
+  background: var(--bone-soft);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 14px 16px;
+  font-family: var(--font-han);
+  font-size: 18px;
+  line-height: 1.7;
+  color: var(--ink);
+  resize: vertical;
+}
+.field-input:focus {
+  outline: none;
+  border-color: var(--vermilion);
+  box-shadow: 0 0 0 3px var(--vermilion-l);
+}
+.field-input::placeholder { color: var(--ink-muted); font-family: var(--font-body); font-size: 14px; }
+
+/* 表格 */
+.tbl-han { width: 100%; border-collapse: collapse; }
+.tbl-han thead th {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+  background: var(--bone-dark);
+  color: var(--ink-soft);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.tbl-han tbody td { padding: 14px; border-bottom: 1px solid var(--rule-light); vertical-align: middle; }
+.tbl-han tbody tr:hover { background: var(--bone-soft); }
+.tbl-han .col-num { color: var(--ink-muted); font-family: var(--font-mono); font-size: 12px; width: 36px; }
+.tbl-han .col-modern { font-family: var(--font-han); font-size: 32px; line-height: 1.1; color: var(--ink); width: 100px; }
+.tbl-han .col-modern .variant { font-size: 14px; color: var(--ink-muted); display: block; margin-top: 2px; }
+.tbl-han .col-modern .hit-note { font-size: 9px; color: var(--bronze); margin-top: 4px; font-family: var(--font-mono); }
+.tbl-han .col-era { width: 88px; height: 88px; text-align: center; }
+.tbl-han .col-era img { max-width: 64px; max-height: 64px; filter: brightness(0.2); }
+.tbl-han .col-links a {
+  color: var(--vermilion);
+  text-decoration: none;
+  font-size: 12px;
+  margin-right: 10px;
+}
+.tbl-han .col-links a:hover { text-decoration: underline; }
+
+/* 缓存徽章 */
+.cache-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  background: var(--bronze-l);
+  color: var(--bronze);
+  border-radius: 999px;
+  margin-left: 6px;
+  vertical-align: 2px;
+}
+
+/* hero 字体 */
+.brand-title {
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 5vw, 4rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.brand-title em { font-style: italic; color: var(--vermilion); font-weight: 400; }
+.brand-sub {
+  font-size: 15px;
+  line-height: 1.85;
+  color: var(--ink-soft);
+  max-width: 560px;
+}
+
+/* hint cards */
+.hint-card {
+  background: var(--bone-soft);
+  border-left: 3px solid var(--bronze);
+  padding: 10px 14px;
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+.hint-card.warn { border-color: var(--vermilion); }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.5s ease-out forwards; }

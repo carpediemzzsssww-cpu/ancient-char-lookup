@@ -1,4 +1,10 @@
-import type { Era, CharImages } from './ccamc';
+import type { Era, EraStatus, CharImages } from './ccamc';
+
+type CachedShape = {
+  hitChar: string;
+  eras: Record<Era, string[]>;
+  eraStatus: Record<Era, EraStatus>;
+};
 
 /**
  * 字 → 4 时代图片 URL 的缓存。
@@ -16,7 +22,7 @@ import type { Era, CharImages } from './ccamc';
 const TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
 const MEM_MAX = 5000; // 进程内最多缓存 5000 字
 
-type CacheEntry = { eras: Record<Era, string[]>; expiresAt: number };
+type CacheEntry = CachedShape & { expiresAt: number };
 const memCache = new Map<string, CacheEntry>();
 
 function memGet(char: string): CacheEntry | null {
@@ -29,13 +35,12 @@ function memGet(char: string): CacheEntry | null {
   return e;
 }
 
-function memSet(char: string, eras: Record<Era, string[]>) {
+function memSet(char: string, data: CachedShape) {
   if (memCache.size >= MEM_MAX) {
-    // 简单 LRU：删第一个（Map 保留插入顺序）
     const firstKey = memCache.keys().next().value;
     if (firstKey !== undefined) memCache.delete(firstKey);
   }
-  memCache.set(char, { eras, expiresAt: Date.now() + TTL_MS });
+  memCache.set(char, { ...data, expiresAt: Date.now() + TTL_MS });
 }
 
 // --- 可选 KV 层（Upstash Redis REST API）---
@@ -44,7 +49,7 @@ const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST
 const KV_ENABLED = Boolean(KV_URL && KV_TOKEN);
 const KV_KEY_PREFIX = 'acl:char:'; // ancient-char-lookup
 
-async function kvGet(char: string): Promise<Record<Era, string[]> | null> {
+async function kvGet(char: string): Promise<CachedShape | null> {
   if (!KV_ENABLED) return null;
   try {
     const res = await fetch(`${KV_URL}/get/${KV_KEY_PREFIX}${encodeURIComponent(char)}`, {
@@ -60,7 +65,7 @@ async function kvGet(char: string): Promise<Record<Era, string[]> | null> {
   }
 }
 
-async function kvSet(char: string, eras: Record<Era, string[]>): Promise<void> {
+async function kvSet(char: string, data: CachedShape): Promise<void> {
   if (!KV_ENABLED) return;
   try {
     const ttlSec = Math.floor(TTL_MS / 1000);
@@ -70,7 +75,7 @@ async function kvSet(char: string, eras: Record<Era, string[]>): Promise<void> {
         Authorization: `Bearer ${KV_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(eras),
+      body: JSON.stringify(data),
       signal: AbortSignal.timeout(2000),
     });
   } catch {
@@ -80,25 +85,24 @@ async function kvSet(char: string, eras: Record<Era, string[]>): Promise<void> {
 
 // --- 公开 API ---
 
-export async function getCachedChar(char: string): Promise<Record<Era, string[]> | null> {
+export async function getCachedChar(char: string): Promise<CachedShape | null> {
   const m = memGet(char);
-  if (m) return m.eras;
+  if (m) return { hitChar: m.hitChar, eras: m.eras, eraStatus: m.eraStatus };
   if (KV_ENABLED) {
     const k = await kvGet(char);
     if (k) {
-      memSet(char, k); // 顺手填进程内
+      memSet(char, k);
       return k;
     }
   }
   return null;
 }
 
-export async function setCachedChar(char: string, eras: Record<Era, string[]>): Promise<void> {
-  // 只缓存"有内容"的结果（任意 era 非空）
-  const hasAny = Object.values(eras).some((v) => v.length > 0);
+export async function setCachedChar(char: string, data: CachedShape): Promise<void> {
+  const hasAny = Object.values(data.eras).some((v) => v.length > 0);
   if (!hasAny) return;
-  memSet(char, eras);
-  if (KV_ENABLED) await kvSet(char, eras);
+  memSet(char, data);
+  if (KV_ENABLED) await kvSet(char, data);
 }
 
 export function cacheStats() {

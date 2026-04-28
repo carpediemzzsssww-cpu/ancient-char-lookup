@@ -1,32 +1,77 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Entry } from '@/lib/parser';
 import { buildRefLinks } from '@/lib/links';
-import { ERAS, ERA_LABEL, type Era } from '@/lib/ccamc';
-import { assembleMatches, computeStats, renderHTML, type CharResult } from '@/lib/render';
+import { ERAS, ERA_LABEL, type Era, type EraStatus } from '@/lib/ccamc';
+import { renderHTML } from '@/lib/generator';
 import { renderNavHTML } from '@/lib/nav-generator';
+import { HERO_IMGS } from '@/lib/heroImgs';
 
 type Phase = 'idle' | 'parsing' | 'matching' | 'done' | 'error';
 type Mode = 'images' | 'nav';
 
-const MAX_CHARS = 500; // 启用图片模式时建议上限
+const MAX_CHARS_IMAGES = 200;
+const MAX_CHARS_NAV = 2000;
 const BATCH = 8;
 
+const EXAMPLE_TEXT = `令\n鬼\n龍\n俯（頫）\n爽（奭）`;
+
+type ApiCharResult = {
+  char: string;
+  hitChar: string;
+  eras: Record<Era, string[]>;
+  eraStatus: Record<Era, EraStatus>;
+  fromCache?: boolean;
+};
+
+type DisplayRow = {
+  entry: Entry;
+  hitChar: string;
+  fromCache: boolean;
+  eras: Record<Era, { url: string | null; status: EraStatus }>;
+};
+
 export default function Home() {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(EXAMPLE_TEXT);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [errMsg, setErrMsg] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>('images'); // 默认尝试图片
-  const [actualMode, setActualMode] = useState<Mode>('images'); // 实际生成时用的模式
+  const [mode, setMode] = useState<Mode>('images');
+  const [actualMode, setActualMode] = useState<Mode>('images');
   const [degradedReason, setDegradedReason] = useState<string | null>(null);
-  const [html, setHtml] = useState<string | null>(null);
+  const [rows, setRows] = useState<DisplayRow[] | null>(null);
+  const [navEntries, setNavEntries] = useState<Entry[] | null>(null);
   const [stats, setStats] = useState<{
-    total: number; anyHit: number; allMiss: number; failed: string[];
-    cacheHits?: number; captchaCount?: number;
+    total: number; eraHit: Record<Era, number>;
+    captchaCount: number; cacheHits: number; notInDb: number;
   } | null>(null);
+  const [serverHealth, setServerHealth] = useState<{ antiBotActive: boolean; cacheHits: number; memSize: number } | null>(null);
+  const [heroIdx, setHeroIdx] = useState(0); // 0..4，0=现代字
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Hero 4 时代演化循环：现代 → 甲骨 → 金文 → 战国 → 篆书 → 现代
+  useEffect(() => {
+    const t = setInterval(() => setHeroIdx((i) => (i + 1) % 5), 1800);
+    return () => clearInterval(t);
+  }, []);
+
+  // 拉一次服务端健康状态（用来在顶部显示状态徽章）
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/match')
+      .then((r) => r.json())
+      .then((d) => {
+        if (!alive) return;
+        setServerHealth({
+          antiBotActive: !!d.health?.antiBotActive,
+          cacheHits: d.health?.totalCacheHits ?? 0,
+          memSize: d.cache?.memSize ?? 0,
+        });
+      })
+      .catch(() => { /* 静默 */ });
+    return () => { alive = false; };
+  }, []);
 
   const onFile = useCallback(async (f: File) => {
     setText('');
@@ -64,13 +109,14 @@ export default function Home() {
 
   const handleGenerate = useCallback(async () => {
     setErrMsg(null);
-    setHtml(null);
+    setRows(null);
+    setNavEntries(null);
     setStats(null);
     setDegradedReason(null);
     setProgress({ done: 0, total: 0 });
 
     try {
-      // ── 1. 解析输入 ──
+      // 1. parse
       setPhase('parsing');
       const r = await fetch('/api/parse', {
         method: 'POST',
@@ -83,38 +129,44 @@ export default function Home() {
       if (entries.length === 0) {
         setPhase('error'); setErrMsg('未识别到任何汉字'); return;
       }
-      const limit = mode === 'images' ? MAX_CHARS : 2000;
+      const limit = mode === 'images' ? MAX_CHARS_IMAGES : MAX_CHARS_NAV;
       if (entries.length > limit) {
         setPhase('error');
-        setErrMsg(`输入超过 ${limit} 字（当前 ${entries.length}）。${mode === 'images' ? '可以切到「导航表」模式查更多字，或用本地 CLI 处理大批量' : '请用本地 CLI'}`);
+        setErrMsg(
+          mode === 'images'
+            ? `字数超过 ${limit}（当前 ${entries.length}）。可切到「导航表」模式查最多 ${MAX_CHARS_NAV} 字，或用本地 CLI 处理大批量。`
+            : `字数超过 ${limit}（当前 ${entries.length}），请用本地 CLI`
+        );
         return;
       }
 
-      // ── 2. 导航表模式：直接渲染，不调 /api/match ──
       if (mode === 'nav') {
         setActualMode('nav');
-        setStats({ total: entries.length, anyHit: 0, allMiss: 0, failed: [] });
-        setHtml(renderNavHTML(entries));
+        setNavEntries(entries);
+        setStats({ total: entries.length, eraHit: { oracle: 0, bronze: 0, chujian: 0, qinjian: 0 }, captchaCount: 0, cacheHits: 0, notInDb: 0 });
         setPhase('done');
         return;
       }
 
-      // ── 3. 图片模式：分批调 /api/match ──
-      const uniq = new Set<string>();
-      for (const e of entries) { uniq.add(e.main); e.variants.forEach((v) => uniq.add(v)); }
-      const chars = Array.from(uniq);
+      // 2. 抓图
+      const uniq: string[] = [];
+      const seen = new Set<string>();
+      for (const e of entries) {
+        for (const c of [e.main, ...e.variants]) {
+          if (!seen.has(c)) { seen.add(c); uniq.push(c); }
+        }
+      }
 
       setPhase('matching');
-      setProgress({ done: 0, total: chars.length });
-
-      const byChar = new Map<string, CharResult>();
+      setProgress({ done: 0, total: uniq.length });
+      const byChar = new Map<string, ApiCharResult>();
       let cacheHits = 0;
       let captchaCount = 0;
       let degradedFromServer = false;
       let degradeReason: string | null = null;
 
-      for (let i = 0; i < chars.length; i += BATCH) {
-        const batch = chars.slice(i, i + BATCH);
+      for (let i = 0; i < uniq.length; i += BATCH) {
+        const batch = uniq.slice(i, i + BATCH);
         const r2 = await fetch('/api/match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -123,46 +175,88 @@ export default function Home() {
         const d2 = await r2.json();
         if (!r2.ok || d2.error) throw new Error(d2.error || 'match failed');
 
-        for (const item of d2.results as (CharResult & { fromCache?: boolean })[]) {
+        for (const item of d2.results as ApiCharResult[]) {
           byChar.set(item.char, item);
           if (item.fromCache) cacheHits++;
         }
         if (typeof d2.stats?.captchaCount === 'number') captchaCount += d2.stats.captchaCount;
 
-        // 服务端连续给 degraded → 立刻停止后续批次，整体降级
         if (d2.degraded) {
           degradedFromServer = true;
           degradeReason = d2.reason || 'degraded';
           break;
         }
-        setProgress({ done: Math.min(i + BATCH, chars.length), total: chars.length });
+        setProgress({ done: Math.min(i + BATCH, uniq.length), total: uniq.length });
       }
 
-      // ── 4. 决策：是否降级到导航表 ──
-      // 触发降级条件：a) 服务端明示 degraded；b) 前端实际命中率 < 30%
+      // 3. 装配每个 entry → DisplayRow
+      const out: DisplayRow[] = entries.map((entry) => {
+        // 候选字：主字 + 异体字
+        const candidates = [entry.main, ...entry.variants];
+        const eras: Record<Era, { url: string | null; status: EraStatus }> = {
+          oracle: { url: null, status: 'error' },
+          bronze: { url: null, status: 'error' },
+          chujian: { url: null, status: 'error' },
+          qinjian: { url: null, status: 'error' },
+        };
+        let hitChar = entry.main;
+        let fromCache = false;
+
+        for (const era of ERAS) {
+          for (const c of candidates) {
+            const r = byChar.get(c);
+            if (!r) continue;
+            const list = r.eras[era];
+            if (list && list.length > 0) {
+              eras[era] = { url: list[0]!, status: 'ok' };
+              hitChar = r.hitChar;
+              if (r.fromCache) fromCache = true;
+              break;
+            }
+            // 没图但状态是 captcha/empty/error，记下来（先不 break，可能后续候选字 ok）
+            if (eras[era].status === 'error') {
+              eras[era] = { url: null, status: r.eraStatus[era] || 'error' };
+            }
+          }
+        }
+        return { entry, hitChar, fromCache, eras };
+      });
+
+      // 4. 决策：是否降级到导航表
       const fetched = Array.from(byChar.values());
-      const anyHitCount = fetched.filter((r) =>
+      const anyOkCount = fetched.filter((r) =>
         ERAS.some((e) => (r.eras[e]?.length ?? 0) > 0)
       ).length;
-      const hitRate = fetched.length > 0 ? anyHitCount / fetched.length : 0;
-      const shouldDegrade = degradedFromServer || (fetched.length >= 5 && hitRate < 0.3);
+      const okRate = fetched.length > 0 ? anyOkCount / fetched.length : 0;
+      const shouldDegrade = degradedFromServer || (fetched.length >= 5 && okRate < 0.3);
 
       if (shouldDegrade) {
         setActualMode('nav');
-        setDegradedReason(degradeReason || (hitRate < 0.3 ? `命中率仅 ${(hitRate * 100).toFixed(0)}%（疑似数据源限流）` : '服务端降级'));
-        setStats({ total: entries.length, anyHit: 0, allMiss: 0, failed: [], cacheHits, captchaCount });
-        setHtml(renderNavHTML(entries));
+        setDegradedReason(degradeReason || (okRate < 0.3 ? `命中率仅 ${(okRate * 100).toFixed(0)}%（疑似数据源限流）` : '服务端降级'));
+        setNavEntries(entries);
+        setStats({ total: entries.length, eraHit: { oracle: 0, bronze: 0, chujian: 0, qinjian: 0 }, captchaCount, cacheHits, notInDb: 0 });
         setPhase('done');
         return;
       }
 
-      // ── 5. 正常组装 ──
       setActualMode('images');
-      const matches = assembleMatches(entries, byChar);
-      const s = computeStats(matches);
-      const failed = matches.filter((m) => ERAS.every((e) => !m.images[e])).map((m) => m.entry.main);
-      setStats({ total: s.total, anyHit: s.anyHit, allMiss: s.allMiss, failed, cacheHits, captchaCount });
-      setHtml(renderHTML(matches, s));
+      // 统计
+      const eraHit: Record<Era, number> = { oracle: 0, bronze: 0, chujian: 0, qinjian: 0 };
+      let notInDb = 0;
+      for (const row of out) {
+        let allEmptyOrError = true;
+        for (const era of ERAS) {
+          if (row.eras[era].status === 'ok') {
+            eraHit[era]++;
+            allEmptyOrError = false;
+          } else if (row.eras[era].status === 'captcha') {
+            allEmptyOrError = false;
+          }
+        }
+        if (allEmptyOrError) notInDb++;
+      }
+      setRows(out);
+      setStats({ total: entries.length, eraHit, captchaCount, cacheHits, notInDb });
       setPhase('done');
     } catch (e) {
       setErrMsg(String((e as Error).message || e));
@@ -170,8 +264,33 @@ export default function Home() {
     }
   }, [text, mode]);
 
+  // 下载/打印 → 复用 cli generator（image 模式）或 nav generator
+  const buildHtmlForExport = useCallback((): string => {
+    if (actualMode === 'nav' && navEntries) return renderNavHTML(navEntries);
+    if (actualMode === 'images' && rows) {
+      const matches = rows.map((r) => ({
+        entry: r.entry,
+        images: {
+          oracle: r.eras.oracle.url,
+          bronze: r.eras.bronze.url,
+          chujian: r.eras.chujian.url,
+          qinjian: r.eras.qinjian.url,
+        },
+      }));
+      const eraHits: Record<Era, number> = { oracle: 0, bronze: 0, chujian: 0, qinjian: 0 };
+      let anyHit = 0, allMiss = 0;
+      for (const m of matches) {
+        let any = false;
+        for (const e of ERAS) { if (m.images[e]) { eraHits[e]++; any = true; } }
+        if (any) anyHit++; else allMiss++;
+      }
+      return renderHTML(matches, { total: matches.length, anyHit, allMiss, eraHits });
+    }
+    return '<!doctype html><html><body>未生成内容</body></html>';
+  }, [actualMode, navEntries, rows]);
+
   const downloadHtml = useCallback(() => {
-    if (!html) return;
+    const html = buildHtmlForExport();
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -179,141 +298,247 @@ export default function Home() {
     a.download = actualMode === 'images' ? '古文字對照表.html' : '古文字字源導航表.html';
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }, [html, actualMode]);
+  }, [actualMode, buildHtmlForExport]);
 
   const printHtml = useCallback(() => {
-    if (!html) return;
+    const html = buildHtmlForExport();
     const w = window.open('', '_blank');
     if (!w) return;
     w.document.write(html);
     w.document.close();
     setTimeout(() => w.print(), 800);
-  }, [html]);
+  }, [buildHtmlForExport]);
 
   const busy = phase === 'parsing' || phase === 'matching';
+  const hero = HERO_IMGS;
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-800">
-      <div className="max-w-3xl mx-auto px-6 py-10">
-        <header className="mb-6">
-          <h1 className="text-3xl font-semibold tracking-tight">古文字對照表生成器</h1>
-          <p className="text-sm text-slate-600 mt-2 leading-6">
-            上传 docx/txt 或粘贴汉字 → 自动生成「甲骨/金文/战国/篆书」可打印对照表。
-            数据来源：<a className="underline" href="http://ccamc.org" target="_blank" rel="noopener">ccamc.org</a>（CC0）。
-          </p>
-          <div className="mt-3 text-xs text-slate-500 leading-6 bg-slate-100 border border-slate-200 rounded p-2">
-            ⚙️ 数据源 ccamc.org 偶尔触发反爬。本服务<strong>有自动降级</strong>：服务端检测到限流时切到「字源导航表」模式（仅链接、不出图）。完整 99.6% 命中表请用 <a className="underline" href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup#本地-cli-cli" target="_blank" rel="noopener">本地 CLI</a>。
+    <main className="min-h-screen relative overflow-hidden">
+      {/* 背景装饰：右上角 atmosphere blob */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-32 -right-40 w-[480px] h-[480px] rounded-full"
+        style={{ background: 'radial-gradient(circle, rgba(181,72,57,0.08) 0%, transparent 70%)' }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -bottom-32 -left-32 w-[400px] h-[400px] rounded-full"
+        style={{ background: 'radial-gradient(circle, rgba(90,116,96,0.06) 0%, transparent 70%)' }}
+      />
+
+      <div className="max-w-5xl mx-auto px-6 lg:px-8 py-10 lg:py-16 relative">
+
+        {/* 顶部导航行 */}
+        <div className="flex items-center justify-between mb-12">
+          <div className="font-mono text-xs tracking-widest" style={{ color: 'var(--ink-muted)' }}>
+            ANCIENT · CHAR · LOOKUP
           </div>
-        </header>
+          <ServerStatusPill health={serverHealth} />
+        </div>
+
+        {/* HERO */}
+        <section className="grid lg:grid-cols-[1.3fr_1fr] gap-12 items-center mb-16">
+          <div className="fade-in">
+            <div className="font-mono text-xs tracking-widest mb-4" style={{ color: 'var(--vermilion)' }}>
+              · 字源檢索 · 一键對照 · CC0 ·
+            </div>
+            <h1 className="brand-title">
+              一字之间，<br />三千年之<em>跨越</em>
+            </h1>
+            <p className="brand-sub mt-6">
+              粘贴汉字，看它在<strong>甲骨文 · 金文 · 战国文字 · 篆书</strong>四个时代的样子。
+              数据来自 ccamc.org（开放古文字字形库 · CC0），完整 99.6% 命中率请用本地 CLI。
+            </p>
+          </div>
+
+          {/* Hero 演化网格 — 5 格大现代字 + 4 时代轮播高亮 */}
+          <div className="relative">
+            <div className="grid grid-cols-5 gap-2">
+              <div
+                className="evo-cell modern col-span-1"
+                style={{ outline: heroIdx === 0 ? '2px solid var(--vermilion)' : 'none', outlineOffset: 2, transition: 'outline 0.3s' }}
+              >
+                令
+                <span className="era-tag">现代</span>
+              </div>
+              {hero.map((h, i) => (
+                <div
+                  key={h.era}
+                  className="evo-cell"
+                  style={{
+                    outline: heroIdx === i + 1 ? '2px solid var(--vermilion)' : 'none',
+                    outlineOffset: 2,
+                    transition: 'outline 0.3s',
+                  }}
+                >
+                  <img src={h.src} alt={h.label} />
+                  <span className="era-tag">{h.label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 font-mono text-[10px] tracking-widest text-right" style={{ color: 'var(--ink-muted)' }}>
+              「令」字之演化 · EVOBC 数据集
+            </div>
+          </div>
+        </section>
 
         {/* 输入区 */}
-        <div
-          className="border-2 border-dashed border-slate-300 rounded-md p-4 text-center mb-3 hover:border-amber-400 transition-colors"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={onDrop}
-        >
-          <input
-            ref={fileRef} type="file" accept=".docx,.txt" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }}
-          />
-          <button type="button" onClick={() => fileRef.current?.click()} className="text-sm text-amber-700 hover:underline">
-            点击上传文件
-          </button>
-          <span className="text-xs text-slate-500 ml-2">或拖入 .docx / .txt</span>
-        </div>
+        <section className="mb-12">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-display text-2xl font-semibold">輸入待查的字</h2>
+            <button
+              onClick={() => setText(EXAMPLE_TEXT)}
+              className="btn-ghost"
+              disabled={busy}
+            >
+              示例字
+            </button>
+          </div>
 
-        <textarea
-          className="w-full min-h-[180px] border border-slate-300 rounded-md p-3 text-base font-serif leading-7 focus:outline-none focus:ring-2 focus:ring-amber-400"
-          placeholder={`输入汉字，每行一个或自由格式：\n令\n鬼\n龍\n俯（頫）`}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          spellCheck={false}
-          disabled={busy}
-        />
-
-        {/* 模式切换 */}
-        <div className="mt-3 flex items-center gap-3 text-sm">
-          <span className="text-slate-600">输出：</span>
-          <label className="flex items-center gap-1 cursor-pointer">
-            <input type="radio" name="mode" value="images" checked={mode === 'images'} onChange={() => setMode('images')} disabled={busy} />
-            <span>对照表（含图）</span>
-          </label>
-          <label className="flex items-center gap-1 cursor-pointer">
-            <input type="radio" name="mode" value="nav" checked={mode === 'nav'} onChange={() => setMode('nav')} disabled={busy} />
-            <span>导航表（仅链接，最稳）</span>
-          </label>
-        </div>
-
-        <div className="flex items-center gap-3 mt-4">
-          <button
-            onClick={handleGenerate}
-            disabled={busy || !text.trim()}
-            className="bg-amber-500 hover:bg-amber-600 disabled:bg-slate-300 text-white font-medium px-5 py-2 rounded-md text-sm transition-colors"
+          <div
+            className="border-2 border-dashed rounded-md px-4 py-3 text-center mb-3 transition-colors"
+            style={{ borderColor: 'var(--rule)' }}
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--vermilion)'; }}
+            onDragLeave={(e) => { e.currentTarget.style.borderColor = 'var(--rule)'; }}
+            onDrop={(e) => { e.currentTarget.style.borderColor = 'var(--rule)'; onDrop(e); }}
           >
-            {phase === 'parsing' ? '解析中…' : phase === 'matching' ? `匹配中 ${progress.done}/${progress.total}` : '生成'}
-          </button>
+            <input
+              ref={fileRef} type="file" accept=".docx,.txt" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }}
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="font-mono text-sm hover:underline"
+              style={{ color: 'var(--vermilion)' }}
+            >
+              ↑ 上传文件
+            </button>
+            <span className="font-mono text-xs ml-2" style={{ color: 'var(--ink-muted)' }}>
+              .docx / .txt · 或拖入此处
+            </span>
+          </div>
+
+          <textarea
+            className="field-input min-h-[180px]"
+            placeholder={`输入汉字，每行一个或自由格式：\n令\n鬼\n龍\n俯（頫）  ← 括号内是异体字`}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            spellCheck={false}
+            disabled={busy}
+          />
+
+          {/* 模式 + 生成 */}
+          <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div className="flex items-center gap-3 text-sm" style={{ color: 'var(--ink-soft)' }}>
+              <span className="font-mono text-xs tracking-wider" style={{ color: 'var(--ink-muted)' }}>OUTPUT</span>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" name="mode" value="images" checked={mode === 'images'} onChange={() => setMode('images')} disabled={busy} />
+                <span>對照表（含图）</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" name="mode" value="nav" checked={mode === 'nav'} onChange={() => setMode('nav')} disabled={busy} />
+                <span>導航表（仅链接，最稳）</span>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3 ml-auto">
+              <button
+                onClick={handleGenerate}
+                disabled={busy || !text.trim()}
+                className="btn-primary"
+              >
+                {phase === 'parsing' ? '解析中…' : phase === 'matching' ? `匹配 ${progress.done}/${progress.total}` : '一键生成 →'}
+              </button>
+            </div>
+          </div>
+
           {phase === 'matching' && (
-            <div className="flex-1 h-2 bg-slate-200 rounded">
-              <div className="h-full bg-amber-400 rounded transition-all" style={{ width: `${(100 * progress.done) / Math.max(1, progress.total)}%` }} />
+            <div className="mt-3 h-1 w-full rounded-full overflow-hidden" style={{ background: 'var(--rule-light)' }}>
+              <div
+                className="h-full transition-all"
+                style={{ width: `${(100 * progress.done) / Math.max(1, progress.total)}%`, background: 'var(--vermilion)' }}
+              />
             </div>
           )}
-        </div>
 
-        {phase === 'error' && errMsg && (
-          <div className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">{errMsg}</div>
-        )}
+          {phase === 'error' && errMsg && (
+            <div className="mt-4 hint-card warn">{errMsg}</div>
+          )}
+        </section>
 
+        {/* 结果区 */}
         {phase === 'done' && stats && (
-          <section className="mt-8">
+          <section className="fade-in">
             {degradedReason && (
-              <div className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-3 leading-6">
-                ℹ️ 已自动降级到<strong>导航表模式</strong>（{degradedReason}）。
-                完整对照表请用本地 CLI——见 <a className="underline" href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener">GitHub</a>。
+              <div className="hint-card warn mb-4">
+                ⚠ <strong>已自动降级到导航表模式</strong>（{degradedReason}）。完整对照表请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>（99.6% 命中）。
               </div>
             )}
-            <div className="flex items-center justify-between mb-3">
-              <div className="text-sm text-slate-700">
-                共 <strong>{stats.total}</strong> 字
-                {actualMode === 'images' && (
-                  <>
-                    　·　至少一种古文字形 <strong>{stats.anyHit}</strong>　·　完全未收录 <strong>{stats.allMiss}</strong>
-                    {typeof stats.cacheHits === 'number' && stats.cacheHits > 0 && (
-                      <span className="text-slate-500 ml-2">（缓存命中 {stats.cacheHits}）</span>
-                    )}
-                  </>
-                )}
-                {stats.failed.length > 0 && (
-                  <span className="text-slate-500 ml-2">（{stats.failed.slice(0, 12).join('、')}{stats.failed.length > 12 ? '…' : ''}）</span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button onClick={downloadHtml} className="text-sm border border-slate-400 px-3 py-1 rounded hover:bg-slate-100">下载 HTML</button>
-                <button onClick={printHtml} className="text-sm border border-slate-400 px-3 py-1 rounded hover:bg-slate-100">打印</button>
+
+            {/* 统计带 */}
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm mb-5" style={{ color: 'var(--ink-soft)' }}>
+              <span>共 <strong style={{ color: 'var(--ink)' }}>{stats.total}</strong> 字</span>
+              {actualMode === 'images' && (
+                <>
+                  <span className="font-mono text-xs" style={{ color: 'var(--ink-muted)' }}>
+                    甲骨 {stats.eraHit.oracle} · 金文 {stats.eraHit.bronze} · 战国 {stats.eraHit.chujian} · 篆书 {stats.eraHit.qinjian}
+                  </span>
+                  {stats.notInDb > 0 && (
+                    <span className="font-mono text-xs" style={{ color: 'var(--vermilion)' }}>
+                      ccamc 未收录 {stats.notInDb}
+                    </span>
+                  )}
+                  {stats.cacheHits > 0 && (
+                    <span className="font-mono text-xs" style={{ color: 'var(--bronze)' }}>
+                      缓存命中 {stats.cacheHits}
+                    </span>
+                  )}
+                </>
+              )}
+              <div className="ml-auto flex gap-2">
+                <button onClick={downloadHtml} className="btn-ghost">下载 HTML</button>
+                <button onClick={printHtml} className="btn-ghost">打印 A4</button>
               </div>
             </div>
-            {actualMode === 'nav' ? (
-              <div className="border border-slate-300 rounded-md bg-white max-h-[640px] overflow-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-100 sticky top-0">
+
+            {/* 对照表 */}
+            {actualMode === 'images' && rows && (
+              <div className="rounded-md overflow-hidden" style={{ border: '1px solid var(--rule)', background: 'var(--bone-soft)' }}>
+                <table className="tbl-han">
+                  <thead>
                     <tr>
-                      <th className="border-b border-slate-300 px-3 py-2 text-left w-12">#</th>
-                      <th className="border-b border-slate-300 px-3 py-2 text-left w-24">現代漢字</th>
-                      <th className="border-b border-slate-300 px-3 py-2 text-left">字源檢索</th>
+                      <th>#</th>
+                      <th>現代漢字</th>
+                      <th>甲骨文</th>
+                      <th>金文</th>
+                      <th>戰國文字</th>
+                      <th>篆書</th>
+                      <th>字源檢索</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {parseTextEntries(text).map((e, i) => (
-                      <tr key={i} className="border-b border-slate-100 hover:bg-amber-50">
-                        <td className="px-3 py-2 text-slate-500">{i + 1}</td>
-                        <td className="px-3 py-2">
-                          <span className="text-2xl font-serif">{e.main}</span>
-                          {e.variants.length > 0 && (
-                            <span className="ml-1 text-sm text-slate-500">（{e.variants.join('、')}）</span>
+                    {rows.map((r, i) => (
+                      <tr key={i}>
+                        <td className="col-num">{i + 1}</td>
+                        <td className="col-modern">
+                          {r.entry.main}
+                          {r.entry.variants.length > 0 && (
+                            <span className="variant">（{r.entry.variants.join('、')}）</span>
                           )}
+                          {r.hitChar !== r.entry.main && (
+                            <div className="hit-note">配字：{r.hitChar}</div>
+                          )}
+                          {r.fromCache && <span className="cache-badge">⚡ 缓存</span>}
                         </td>
-                        <td className="px-3 py-2">
-                          {buildRefLinks(e.main).map((l) => (
-                            <a key={l.name} href={l.url} target="_blank" rel="noopener" className="mr-3 text-blue-700 hover:underline text-sm">{l.name}</a>
+                        {ERAS.map((era) => (
+                          <td key={era} className="col-era">
+                            <EraCell url={r.eras[era].url} status={r.eras[era].status} eraLabel={ERA_LABEL[era]} />
+                          </td>
+                        ))}
+                        <td className="col-links">
+                          {buildRefLinks(r.entry.main).map((l) => (
+                            <a key={l.name} href={l.url} target="_blank" rel="noopener">{l.name}</a>
                           ))}
                         </td>
                       </tr>
@@ -321,52 +546,115 @@ export default function Home() {
                   </tbody>
                 </table>
               </div>
-            ) : (
-              html && (
-                <iframe
-                  title="预览"
-                  srcDoc={html}
-                  className="w-full h-[640px] border border-slate-300 rounded-md bg-white"
-                />
-              )
+            )}
+
+            {/* 导航表（降级 / 用户主选） */}
+            {actualMode === 'nav' && navEntries && (
+              <div className="rounded-md overflow-hidden" style={{ border: '1px solid var(--rule)', background: 'var(--bone-soft)' }}>
+                <table className="tbl-han">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>現代漢字</th>
+                      <th>字源檢索（4 個權威庫）</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {navEntries.map((e, i) => (
+                      <tr key={i}>
+                        <td className="col-num">{i + 1}</td>
+                        <td className="col-modern">
+                          {e.main}
+                          {e.variants.length > 0 && <span className="variant">（{e.variants.join('、')}）</span>}
+                        </td>
+                        <td className="col-links">
+                          {buildRefLinks(e.main).map((l) => (
+                            <a key={l.name} href={l.url} target="_blank" rel="noopener">{l.name}</a>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* 「缺」状态图例 */}
+            {actualMode === 'images' && rows && (
+              <div className="mt-4 hint-card text-xs">
+                <strong>「缺」的几种可能：</strong>
+                <span className="cell-miss-empty mx-2">·  灰</span>= 此字源此时代无字形拓本（古文字本就只有部分字流传至今）
+                <span className="cell-miss-captcha mx-2">⏳ 朱</span>= 数据源临时限流，刷新或几小时后再试
+                <span className="cell-miss-error mx-2">✕ 暗</span>= 网络错误。完整对照表请用 <a href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener" style={{ color: 'var(--vermilion)' }}>本地 CLI</a>。
+              </div>
             )}
           </section>
         )}
 
-        <footer className="mt-12 pt-6 border-t border-slate-200 text-xs text-slate-500 leading-6">
-          <a className="underline" href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener">GitHub</a> · MIT License · 致谢
-          <a className="underline ml-1" href="https://zi.tools" target="_blank" rel="noopener">zi.tools</a>、
-          <a className="underline ml-1" href="http://ccamc.org" target="_blank" rel="noopener">ccamc.org</a>、
-          <a className="underline ml-1" href="https://xiaoxue.iis.sinica.edu.tw" target="_blank" rel="noopener">小学堂</a>、
-          <a className="underline ml-1" href="https://www.zdic.net" target="_blank" rel="noopener">汉典</a>、
-          <a className="underline ml-1" href="https://github.com/RomanticGodVAN/character-Evolution-Dataset" target="_blank" rel="noopener">EVOBC</a>
+        {/* 印章 + 致谢 */}
+        <footer className="mt-20 pt-8 flex flex-col sm:flex-row items-center sm:items-end gap-6 sm:gap-8 sm:justify-between" style={{ borderTop: '1px solid var(--rule)' }}>
+          <div className="flex items-center gap-4">
+            <div className="seal" aria-hidden>古文</div>
+            <div>
+              <div className="font-display text-base font-semibold" style={{ color: 'var(--ink)' }}>古文字對照表生成器</div>
+              <div className="font-mono text-[10px] tracking-widest mt-1" style={{ color: 'var(--ink-muted)' }}>
+                CLI · WEB · MIT LICENSE
+              </div>
+            </div>
+          </div>
+          <div className="text-xs leading-relaxed text-center sm:text-right" style={{ color: 'var(--ink-muted)' }}>
+            <div>
+              数据致谢：
+              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="http://ccamc.org" target="_blank" rel="noopener">ccamc.org</a> ·
+              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://zi.tools" target="_blank" rel="noopener">zi.tools</a> ·
+              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://xiaoxue.iis.sinica.edu.tw" target="_blank" rel="noopener">小学堂</a> ·
+              <a className="ml-1 hover:underline" style={{ color: 'var(--ink-soft)' }} href="https://github.com/RomanticGodVAN/character-Evolution-Dataset" target="_blank" rel="noopener">EVOBC</a>
+            </div>
+            <div className="mt-1">
+              <a className="hover:underline" style={{ color: 'var(--vermilion)' }} href="https://github.com/carpediemzzsssww-cpu/ancient-char-lookup" target="_blank" rel="noopener">GitHub →</a>
+            </div>
+          </div>
         </footer>
       </div>
     </main>
   );
 }
 
-// 客户端备用解析（仅纯文本，与服务端 parser 同规则的轻量版）
-function parseTextEntries(t: string): Entry[] {
-  const HAN = /[一-鿿㐀-䶿]/gu;
-  const BR = /^([一-鿿㐀-䶿])\s*[（(]\s*([一-鿿㐀-䶿]+)\s*[）)]/u;
-  const seen = new Set<string>();
-  const out: Entry[] = [];
-  for (const line of t.split(/\r?\n/)) {
-    const s = line.trim();
-    if (!s) continue;
-    let entry: Entry | null = null;
-    const m = s.match(BR);
-    if (m && m[1] && m[2]) entry = { main: m[1], variants: m[2].split('') };
-    else {
-      const chars = s.match(HAN) || [];
-      if (chars[0]) entry = { main: chars[0], variants: chars.slice(1) };
-    }
-    if (!entry) continue;
-    const key = entry.main + '|' + entry.variants.join('');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(entry);
+function ServerStatusPill({ health }: { health: { antiBotActive: boolean; cacheHits: number; memSize: number } | null }) {
+  if (!health) {
+    return (
+      <span className="status-pill status-checking">
+        <span className="dot" />
+        <span>检测中…</span>
+      </span>
+    );
   }
-  return out;
+  if (health.antiBotActive) {
+    return (
+      <span className="status-pill status-degraded" title="ccamc 当前限流，已切到导航表模式">
+        <span className="dot" />
+        <span>限流中 · 自动降级</span>
+      </span>
+    );
+  }
+  return (
+    <span className="status-pill status-ok" title={`缓存 ${health.memSize} 字 · 命中 ${health.cacheHits} 次`}>
+      <span className="dot" />
+      <span>正常 · cache {health.memSize}</span>
+    </span>
+  );
+}
+
+function EraCell({ url, status, eraLabel }: { url: string | null; status: EraStatus; eraLabel: string }) {
+  if (status === 'ok' && url) {
+    return <img src={url} alt={eraLabel} loading="lazy" />;
+  }
+  if (status === 'captcha') {
+    return <span className="cell-miss-captcha" title="数据源临时限流，刷新或稍后再试">⏳ 限流</span>;
+  }
+  if (status === 'error') {
+    return <span className="cell-miss-error" title="网络错误">✕ 失败</span>;
+  }
+  // empty
+  return <span className="cell-miss-empty" title="此字源此时代无收录（古文字部分字本就无遗存）">· 无</span>;
 }

@@ -1,4 +1,5 @@
 import * as cheerio from 'cheerio';
+import * as OpenCC from 'opencc-js';
 
 export type Era = 'oracle' | 'bronze' | 'chujian' | 'qinjian';
 export const ERAS: Era[] = ['oracle', 'bronze', 'chujian', 'qinjian'];
@@ -13,7 +14,6 @@ const BASE = 'http://ccamc.org';
 const PAGE = `${BASE}/cjkv_oaccgd.php`;
 const AJAX = `${BASE}/controller/CJKV/get_ziyuan_images_aw.php`;
 
-// 浏览器风格 UA + Accept-Language 友好化（默认 axios/fetch UA 一眼机器人，触发反爬概率高）
 const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -21,14 +21,22 @@ const BROWSER_HEADERS = {
   'Cache-Control': 'no-cache',
 };
 
-// 反爬触发的指纹：响应过小 或 含验证码字样
 const CAPTCHA_HINTS = ['驗證碼', '验证码', 'captcha_verify.php', 'captcha_image'];
-const MIN_REAL_SIZE = 5000; // 真实主页 ~28KB；验证码页 ~2KB
+const MIN_REAL_SIZE = 5000;
+
+/**
+ * 每个 era 的查询结果细分：
+ *  - ok      此 era 抓到 ≥1 张图（urls 非空）
+ *  - empty   ccamc 主页正常返回但此 era 无字形数据（ccamc 没收录此字此时代）
+ *  - captcha 此 era 接口被反爬（短期，~24h 自动恢复）
+ *  - error   网络错误 / HTTP 错误
+ */
+export type EraStatus = 'ok' | 'empty' | 'captcha' | 'error';
 
 export type FetchOutcome =
   | { kind: 'ok'; urls: string[] }
   | { kind: 'captcha'; htmlSize: number }
-  | { kind: 'empty' } // 200 但既非 captcha 也无 zlist 也无 charImg（数据缺失）
+  | { kind: 'empty' }
   | { kind: 'http_error'; status: number }
   | { kind: 'network_error'; message: string };
 
@@ -77,7 +85,6 @@ async function fetchPage(char: string, era: Era, timeoutMs: number): Promise<Pag
   return { kind: 'token', a: foundA, t: foundT, i: foundI };
 }
 
-// 把 http://ccamc.org/... 包成 /api/img?u=... 走 HTTPS 代理
 function proxify(url: string): string {
   return `/api/img?u=${encodeURIComponent(url)}`;
 }
@@ -111,9 +118,6 @@ async function fetchImages(token: { a: string; t: string; i: string }, timeoutMs
   return urls;
 }
 
-/**
- * 抓取单个字 + 单个时代。返回详细结果（用于上层判断是否触发反爬降级）。
- */
 export async function fetchEraDetailed(char: string, era: Era, timeoutMs = 4000): Promise<FetchOutcome> {
   try {
     const page = await fetchPage(char, era, timeoutMs);
@@ -127,27 +131,100 @@ export async function fetchEraDetailed(char: string, era: Era, timeoutMs = 4000)
   }
 }
 
-/** 兼容旧调用方 */
 export async function fetchEra(char: string, era: Era, timeoutMs = 4000): Promise<string[]> {
   const r = await fetchEraDetailed(char, era, timeoutMs);
   return r.kind === 'ok' ? r.urls : [];
 }
 
+function outcomeToStatus(o: FetchOutcome): EraStatus {
+  if (o.kind === 'ok') return o.urls.length > 0 ? 'ok' : 'empty';
+  if (o.kind === 'captcha') return 'captcha';
+  if (o.kind === 'empty') return 'empty';
+  return 'error';
+}
+
 export type CharImages = {
-  char: string;
+  char: string;            // 用户输入的原字
+  hitChar: string;         // 实际拿到数据的字（可能是简繁转换后的）
   eras: Record<Era, string[]>;
-  /** 任一 era 命中 captcha 时为 true（提示上层考虑降级） */
+  eraStatus: Record<Era, EraStatus>;
   captchaDetected?: boolean;
 };
 
-export async function fetchCharAllEras(char: string, perEraTimeoutMs = 4000): Promise<CharImages> {
+// opencc 转换器（懒加载缓存）
+let s2t: ((s: string) => string) | null = null;
+let t2s: ((s: string) => string) | null = null;
+function getConverters() {
+  if (!s2t) s2t = OpenCC.Converter({ from: 'cn', to: 'tw' });
+  if (!t2s) t2s = OpenCC.Converter({ from: 'tw', to: 'cn' });
+  return { s2t: s2t!, t2s: t2s! };
+}
+
+async function fetchOnce(char: string, perEraTimeoutMs: number): Promise<{ eras: Record<Era, string[]>; eraStatus: Record<Era, EraStatus>; anyOk: boolean; anyCaptcha: boolean }> {
   const results = await Promise.all(ERAS.map((e) => fetchEraDetailed(char, e, perEraTimeoutMs)));
   const eras: Record<Era, string[]> = { oracle: [], bronze: [], chujian: [], qinjian: [] };
-  let captchaDetected = false;
+  const eraStatus: Record<Era, EraStatus> = { oracle: 'error', bronze: 'error', chujian: 'error', qinjian: 'error' };
+  let anyOk = false, anyCaptcha = false;
   ERAS.forEach((e, i) => {
     const r = results[i];
-    if (r && r.kind === 'ok') eras[e] = r.urls;
-    if (r && r.kind === 'captcha') captchaDetected = true;
+    if (!r) return;
+    const st = outcomeToStatus(r);
+    eraStatus[e] = st;
+    if (r.kind === 'ok') eras[e] = r.urls;
+    if (st === 'ok') anyOk = true;
+    if (st === 'captcha') anyCaptcha = true;
   });
-  return { char, eras, captchaDetected };
+  return { eras, eraStatus, anyOk, anyCaptcha };
+}
+
+/**
+ * 抓单字 4 时代图片，含简↔繁回退。
+ *
+ * 决策：
+ * 1. 直接查 char。如果有任意 era ok 或 captcha → 用此结果（captcha 是临时，不做回退）
+ * 2. 否则 char 全 empty/error → 尝试简↔繁转换后的另一种写法
+ *    - 转换后 ok 命中 → 用转换字结果，hitChar 标记为转换字
+ *    - 仍 miss → 返回原字结果（全 empty）
+ */
+export async function fetchCharAllEras(char: string, perEraTimeoutMs = 4000): Promise<CharImages> {
+  // 尝试 1：直接
+  const direct = await fetchOnce(char, perEraTimeoutMs);
+  if (direct.anyOk || direct.anyCaptcha) {
+    return {
+      char,
+      hitChar: char,
+      eras: direct.eras,
+      eraStatus: direct.eraStatus,
+      captchaDetected: direct.anyCaptcha,
+    };
+  }
+
+  // 尝试 2：简↔繁回退
+  const { s2t, t2s } = getConverters();
+  const candidates = new Set<string>();
+  candidates.add(s2t(char));
+  candidates.add(t2s(char));
+  candidates.delete(char); // 跳过和原字一样的
+
+  for (const alt of candidates) {
+    const r = await fetchOnce(alt, perEraTimeoutMs);
+    if (r.anyOk) {
+      return {
+        char,
+        hitChar: alt,
+        eras: r.eras,
+        eraStatus: r.eraStatus,
+        captchaDetected: r.anyCaptcha,
+      };
+    }
+  }
+
+  // 都 miss → 返回直接查的结果（全 empty）
+  return {
+    char,
+    hitChar: char,
+    eras: direct.eras,
+    eraStatus: direct.eraStatus,
+    captchaDetected: false,
+  };
 }
