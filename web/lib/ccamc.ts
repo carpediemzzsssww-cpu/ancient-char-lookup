@@ -181,50 +181,53 @@ async function fetchOnce(char: string, perEraTimeoutMs: number): Promise<{ eras:
  * 抓单字 4 时代图片，含简↔繁回退。
  *
  * 决策：
- * 1. 直接查 char。如果有任意 era ok 或 captcha → 用此结果（captcha 是临时，不做回退）
- * 2. 否则 char 全 empty/error → 尝试简↔繁转换后的另一种写法
- *    - 转换后 ok 命中 → 用转换字结果，hitChar 标记为转换字
- *    - 仍 miss → 返回原字结果（全 empty）
+ * 1. 直接查 char。任意 era 命中 ok → 直接用（已有真实数据，无需回退）
+ * 2. 否则（全 empty / 全 captcha / 混合）尝试简↔繁转换后的写法
+ *    - 转换字 anyOk → 用转换字结果，hitChar 标记
+ *    - 仍 miss → 返回原字结果（保留原字的 captcha/empty 状态供 UI 显示）
  */
 export async function fetchCharAllEras(char: string, perEraTimeoutMs = 4000): Promise<CharImages> {
-  // 尝试 1：直接
   const direct = await fetchOnce(char, perEraTimeoutMs);
-  if (direct.anyOk || direct.anyCaptcha) {
+  if (direct.anyOk) {
     return {
-      char,
-      hitChar: char,
+      char, hitChar: char,
       eras: direct.eras,
       eraStatus: direct.eraStatus,
       captchaDetected: direct.anyCaptcha,
     };
   }
 
-  // 尝试 2：简↔繁回退
+  // 直查没拿到任何 ok（全 empty / captcha / error）→ 尝试简↔繁
   const { s2t, t2s } = getConverters();
   const candidates = new Set<string>();
   candidates.add(s2t(char));
   candidates.add(t2s(char));
-  candidates.delete(char); // 跳过和原字一样的
+  candidates.delete(char);
 
   for (const alt of candidates) {
     const r = await fetchOnce(alt, perEraTimeoutMs);
     if (r.anyOk) {
+      // 用转换字成功——合并状态：转换字命中的 era 用 ok，原字 captcha 的保留 captcha 暗示用户重试
+      const mergedStatus: Record<Era, EraStatus> = { ...r.eraStatus };
+      for (const e of ERAS) {
+        if (mergedStatus[e] !== 'ok' && direct.eraStatus[e] === 'captcha') {
+          mergedStatus[e] = 'captcha';
+        }
+      }
       return {
-        char,
-        hitChar: alt,
+        char, hitChar: alt,
         eras: r.eras,
-        eraStatus: r.eraStatus,
-        captchaDetected: r.anyCaptcha,
+        eraStatus: mergedStatus,
+        captchaDetected: r.anyCaptcha || direct.anyCaptcha,
       };
     }
   }
 
-  // 都 miss → 返回直接查的结果（全 empty）
+  // 都 miss → 返回直查结果（保留原始状态语义）
   return {
-    char,
-    hitChar: char,
+    char, hitChar: char,
     eras: direct.eras,
     eraStatus: direct.eraStatus,
-    captchaDetected: false,
+    captchaDetected: direct.anyCaptcha,
   };
 }
